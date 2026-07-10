@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>月蝕之村 Notte di Luna — AI狼人殺 v0.8.1 核心事實傳導／言行一致版</title>
+<title>月蝕之村 Notte di Luna — AI狼人殺 v0.8.2 預言家驗人目標修正版</title>
 <link href="https://fonts.googleapis.com/css2?family=Noto+Serif+TC:wght@500;700;900&family=Noto+Sans+TC:wght@400;500;700&display=swap" rel="stylesheet">
 <style>
 :root{
@@ -270,7 +270,7 @@ footer{flex:0 0 auto;padding:10px 4px 4px;position:relative;z-index:1}
 </div>
 <div id="overlay"><div id="modal"></div></div>
 <script>
-/* ===== 月蝕之村 v0.8.1 — 公開事實重建 / 言行一致 / 騎士資訊收益 / 關鍵輪次投票義務 =====
+/* ===== 月蝕之村 v0.8.2 — 預言家避開已拍明女巫 / 優先驗未知與爭議位 =====
    規則引擎：懷疑度模型 / 投票 / 夜間策略
    LLM層：發言生成 + 玩家自由發言解析（可離線退回模板+關鍵詞） */
 
@@ -3010,11 +3010,34 @@ function seerCertainWolfFromOwnInfo(seer,p){
   if(seer.role==='SEER'&&(p.claim==='預言家'||p.claim==='通靈師'||G.seerClaims.includes(p.seat)))return true;
   return false;
 }
+function seerPublicClaimAlreadyResolvesTarget(seer,p){
+  if(!seer||!p)return false;
+  if(p.revealed==='good')return true;
+
+  // v0.8.2：公開女巫本身能靠銀水、毒口、對跳與夜間結果自證。
+  // 無對跳、無硬矛盾時，真預言家不應浪費一晚去驗已拍明女巫。
+  if(p.claim==='女巫'){
+    if(hasWitchCounterClaim()||claimHasHardContradiction(p))return false;
+    return true;
+  }
+
+  // 已翻牌／已被騎士證實的騎士同樣不需要重複查驗。
+  if(p.claim==='騎士'){
+    const verified=verifiedKnightSeat();
+    if(verified===p.seat||p.revealed==='good')return true;
+  }
+
+  return false;
+}
 function seerCheckCandidates(seer){
-  return alive().filter(p=>p.seat!==seer.seat
+  const base=alive().filter(p=>p.seat!==seer.seat
     &&!(p.seat in (seer.checked||{}))
     &&!(p.seat in (seer.trueChecks||{}))
     &&!seerCertainWolfFromOwnInfo(seer,p));
+
+  // 先排除已靠公開身分與技能鏈足以自證的目標，優先驗未知外置位。
+  const useful=base.filter(p=>!seerPublicClaimAlreadyResolvesTarget(seer,p));
+  return useful.length?useful:base;
 }
 function botSeerCheck(seer){
   ensureMind(seer);
@@ -3022,16 +3045,31 @@ function botSeerCheck(seer){
   if(!cand.length)return null;
   const publicHeat=p=>{
     let s=0;
-    if(p.claim==='通靈師')s+=0.20;
-    if(p.claim==='女巫')s+=0.12;
+    const wolfProb=beliefWolfProb(seer,p.seat);
+    const uncertainty=1-Math.min(1,Math.abs(wolfProb-0.5)*2);
+
+    // 預言家應優先查「有狼面但尚未坐實」或「資訊價值高的未知位」，
+    // 而不是因為某人已高度可信又去重複驗好。
+    s+=wolfProb*0.62;
+    s+=uncertainty*0.26;
+    s+=voteTraceHeat(seer,p.seat)*0.70;
+
     if(G.aiJudgements.some(j=>j.target===p.seat&&/Accuse|VoteIntent|deathAccuse|falseAccuse/.test(j.type)))s+=0.12;
-    s+=Math.abs((beliefWolfProb(seer,p.seat))-0.5)*0.45; // 查高爭議或高狼面，但已定狼直接排除
-    s+=voteTraceHeat(seer,p.seat);
+    if(!p.claim&&!p.revealed&&!hasPublicHardInfoSeat(p.seat))s+=0.18;
+
+    // 女巫有對跳或公開硬矛盾時才值得查；單邊女巫則大幅降權。
+    if(p.claim==='女巫'){
+      if(hasWitchCounterClaim()||claimHasHardContradiction(p))s+=0.80;
+      else s-=1.50;
+    }
+    if(p.revealed==='good')s-=3.0;
     if(G.day===1&&!hasSpokenToday(p.seat)&&!hasPublicHardInfoSeat(p.seat))s-=0.25;
     return s+Math.random()*0.05;
   };
   cand.sort((a,b)=>publicHeat(b)-publicHeat(a));
-  return cand[0].seat;
+  const target=cand[0];
+  if(target)addMindNote(seer,target.seat,`預言家驗人：優先查未知／爭議位，避開已拍明且無對跳的女巫`,0.04);
+  return target?.seat??null;
 }
 function seerInfoValueForWitch(seer){
   if(!seer)return 0;
